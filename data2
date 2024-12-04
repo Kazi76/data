@@ -1,0 +1,150 @@
+import requests
+from bs4 import BeautifulSoup
+import numpy as np
+import pickle
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+
+
+YELP_API_KEY = "your_yelp_api_key"
+OPENWEATHER_API_KEY = "e244ecc53b14661aff8120fbbc4edcca"
+GOOGLE_MAPS_API_KEY = "your_google_maps_api_key"
+
+
+def get_restaurant_details(yelp_url):
+    """Scrape restaurant details from Yelp."""
+    response = requests.get(yelp_url)
+    soup = BeautifulSoup(response.content, "html.parser")
+
+    name = soup.find("h1").text.strip()
+    address = soup.find("address").text.strip() if soup.find("address") else "N/A"
+    timings = soup.find("table", class_="hours-table").text.strip() if soup.find("table", class_="hours-table") else "N/A"
+    menu = {"Butter Chicken": 15.0, "Naan": 3.0}  # Placeholder for menu items
+
+    return {"name": name, "address": address, "timings": timings, "menu": menu}
+
+
+def find_competitors(location, term="indian food", radius=2000):
+    """Find competitors using Yelp API."""
+    url = "https://api.yelp.com/v3/businesses/search"
+    headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
+    params = {"term": term, "location": location, "radius": radius, "sort_by": "rating", "limit": 5}
+
+    response = requests.get(url, headers=headers, params=params)
+    data = response.json()
+    competitors = []
+    for business in data.get("businesses", []):
+        competitors.append({
+            "name": business["name"],
+            "rating": business["rating"],
+            "menu": {"Butter Chicken": 12.5, "Naan": 2.0},  # Placeholder for menu
+        })
+    return competitors
+
+
+def get_weather_data(lat, lon):
+    """Fetch current weather data from OpenWeatherMap."""
+    url = f"http://api.openweathermap.org/data/2.5/weather"
+    params = {"lat": lat, "lon": lon, "appid": OPENWEATHER_API_KEY, "units": "imperial"}
+
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    return {"error": "Failed to fetch weather data"}
+
+
+def train_model():
+    """Train a logistic regression model."""
+    np.random.seed(42)
+    data = {
+        "Temperature": np.random.randint(30, 90, 1000),  # Fahrenheit
+        "RainOrSnow": np.random.choice([0, 1], size=1000),  # 0 = No rain/snow, 1 = Rain/snow
+        "BusyStatus": np.random.choice([0, 1], size=1000),  # 0 = Not busy, 1 = Busy
+    }
+
+    data["IncreasePrice"] = (
+        (data["Temperature"] < 45) | (data["RainOrSnow"] == 1) & (data["BusyStatus"] == 1)
+    ).astype(int)
+
+    df = pd.DataFrame(data)
+    X = df[["Temperature", "RainOrSnow", "BusyStatus"]]
+    y = df["IncreasePrice"]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    model = LogisticRegression()
+    model.fit(X_train, y_train)
+
+    predictions = model.predict(X_test)
+    accuracy = accuracy_score(y_test, predictions)
+    print(f"Model Accuracy: {accuracy:.2f}")
+
+    with open("pricing_model.pkl", "wb") as file:
+        pickle.dump(model, file)
+
+train_model()
+
+
+def predict_price_adjustment(temp, rain_or_snow, busy_status):
+    """Predict if price adjustment is needed."""
+    with open("pricing_model.pkl", "rb") as file:
+        model = pickle.load(file)
+    features = np.array([[temp, rain_or_snow, busy_status]])
+    return model.predict(features)[0]  # Returns 1 (increase price) or 0 (no increase)
+
+
+def calculate_final_prices_with_ml(menu, competitors_menu, weather_data, busy_time):
+    """Adjust menu prices based on ML predictions."""
+    final_prices = {}
+    rain_or_snow = int("rain" in weather_data["weather"][0]["main"].lower())
+    temp = weather_data["main"]["temp"]
+    busy_status = int(busy_time)
+
+    for item, base_price in menu.items():
+        competitor_prices = [comp["menu"].get(item, base_price) for comp in competitors_menu if item in comp["menu"]]
+        lowest_price = min(competitor_prices) if competitor_prices else base_price
+
+        # Predict price adjustment
+        increase_price = predict_price_adjustment(temp, rain_or_snow, busy_status)
+
+        if increase_price:
+            final_prices[item] = round(lowest_price * 1.15, 2)  # Increase by 15%
+        else:
+            final_prices[item] = lowest_price
+    return final_prices
+
+
+def main():
+    yelp_url = "https://www.yelp.com/biz/village-the-soul-of-india-hicksville"
+    lat, lon = 40.755, -73.982  # Replace with actual coordinates
+
+
+    print("Fetching restaurant details...")
+    restaurant_data = get_restaurant_details(yelp_url)
+
+   
+    print("Finding competitors...")
+    location = restaurant_data["address"]
+    competitors = find_competitors(location)
+
+ 
+    print("Fetching weather data...")
+    weather_data = get_weather_data(lat, lon)
+    if "error" in weather_data:
+        print(weather_data["error"])
+        return
+
+  
+    busy_time = True  # Replace with live data from Google Maps
+
+    print("Calculating final prices using ML model...")
+    final_prices = calculate_final_prices_with_ml(restaurant_data["menu"], competitors, weather_data, busy_time)
+
+    print("\n--- Final Menu with Prices ---")
+    for item, price in final_prices.items():
+        print(f"{item}: ${price}")
+
+if __name__ == "__main__":
+    main()
